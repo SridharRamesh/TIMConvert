@@ -17,9 +17,11 @@ module Main (main) where
 import qualified Data.ByteString as Bytes
 import Data.ByteString(ByteString)
 import Data.Word
+import Data.Binary
+import Data.Binary.Get
 
-x :: IO [ByteString]
-x = mapM Bytes.readFile 
+resourceFilePaths :: [FilePath]
+resourceFilePaths = 
   [
     "/Users/sridharramesh/Emu/DOS/TIM/RESOURCE.001",
     "/Users/sridharramesh/Emu/DOS/TIM/RESOURCE.002",
@@ -27,52 +29,44 @@ x = mapM Bytes.readFile
     "/Users/sridharramesh/Emu/DOS/TIM/RESOURCE.004"
   ]
 
-nullByte :: Word8
-nullByte = 0
+levelFiles :: IO [TIMFile]
+levelFiles = 
+  do resourceFiles <- mapM decodeFile resourceFilePaths
+     return $ concatMap files resourceFiles
 
-isEmpty :: ByteString -> Bool
-isEmpty = Bytes.null
+getMany :: (Binary a, Enum n) => Get n -> Get [a]
+getMany getCount = 
+  do count <- getCount
+     mapM (\_ -> get) [toEnum 1..count]
 
-bytesTakeDrop :: Int -> ByteString -> (ByteString, ByteString)
-bytesTakeDrop n bytes = (Bytes.take n bytes, Bytes.drop n bytes)
+getAdInfinitum :: Binary a => Get [a]
+getAdInfinitum = 
+  do b <- isEmpty
+     if b
+     then return []
+     else do x <- get
+             xs <- getAdInfinitum
+             return (x : xs)
 
-parseFileName :: ByteString -> (ByteString, ByteString)
-parseFileName (bytes :: ByteString) = 
-  let (first13, remainder) = bytesTakeDrop 13 bytes
-      (beforeNull, nullOnwards) = Bytes.break (nullByte ==) first13
-  in if isEmpty nullOnwards
-     then error "Tried parsing a filename, but didn't find a null in 13 bytes."
-     else (beforeNull, remainder)
+unsupportedPut = error "We do not support put."
 
-convertBytesToUINTLE :: ByteString -> Int
-convertBytesToUINTLE bytes = 
-  let bytesAsInts = map fromEnum $ Bytes.unpack bytes
-      significances = iterate (256*) 1
-  in sum $ zipWith (*) bytesAsInts significances
+getTIMFileName = 
+  do (filename :: [Word8]) <- mapM (\_ -> get) [0..12]
+     return $ Bytes.pack $ takeWhile (/= 0) filename
 
-parseUINT32LE :: ByteString -> (Int, ByteString)
-parseUINT32LE (bytes :: ByteString) 
-  | Bytes.length bytes < 4 = error "Tried parsing a UINT32LE, but had under 4 bytes."
-  | otherwise = 
-    let (prefix, remainder) = bytesTakeDrop 4 bytes
-        num = convertBytesToUINTLE prefix
-    in (num, remainder)
+data TIMFile = TIMFile {filename :: ByteString, filecontents :: [Word8]}
+instance Binary TIMFile where
+  get = do
+    filename <- getTIMFileName
+    filecontents <- getMany getWord32le
+    return $ TIMFile filename filecontents
+  put = unsupportedPut
 
-parseTIMFile :: ByteString -> ((ByteString, ByteString), ByteString)
-parseTIMFile (bytes :: ByteString) = 
-  let (filename, remainder) = parseFileName bytes
-      (filesize, remainder2) = parseUINT32LE remainder
-  in if Bytes.length remainder2 < filesize
-     then error "Tried parsing a file, but the stated file size was longer than provided."
-     else let (filedata, remainder3) = bytesTakeDrop filesize remainder2
-          in ((filename, filedata), remainder3)
-
-parseTIMFiles :: ByteString -> [(ByteString, ByteString)]
-parseTIMFiles (bytes :: ByteString)
-  | isEmpty bytes = []
-  | otherwise = 
-    let (file, remainder) = parseTIMFile bytes
-    in file : (parseTIMFiles remainder)
+data TIMResourceFile = TIMResourceFile {files :: [TIMFile]}
+instance Binary TIMResourceFile where
+  get = do files <- getAdInfinitum
+           return $ TIMResourceFile files
+  put = unsupportedPut
 
 main :: IO ()
 main = do
